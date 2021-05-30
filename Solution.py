@@ -501,8 +501,8 @@ def averageSizeQueriesOnDisk(diskID: int) -> float:
         conn = Connector.DBConnector()
         query = sql.SQL("SELECT AVG(Q.size) "
                         "FROM Queries Q, (SELECT queryID "
-                                             "FROM QueriesDisks "
-                                             "WHERE diskID={diskID}) AS QD "
+                        "FROM QueriesDisks "
+                        "WHERE diskID={diskID}) AS QD "
                         "WHERE Q.queryID = QD.queryID").format(diskID=sql.Literal(diskID))
         rows_effected, result = conn.execute(query)
         ret = result[0]['avg']
@@ -579,6 +579,8 @@ def getQueriesCanBeAddedToDisk(diskID: int) -> List[int]:
     finally:
         conn.close()
         return ret
+
+
 # ("SELECT Q.queryID "
 #                         "FROM  (SELECT diskID, free_space FROM Disks WHERE diskID={diskID}) AS D, Queries Q "
 #                         "WHERE Q.size<=D.free_space AND Q.queryID NOT IN (SELECT queryID FROM QueriesDisks WHERE diskID={diskID}) "
@@ -610,11 +612,47 @@ def getQueriesCanBeAddedToDiskAndRAM(diskID: int) -> List[int]:
 
 
 def isCompanyExclusive(diskID: int) -> bool:
-    return True
+    conn = None
+    rows_effected, result = 0, ResultSet()
+    ret = False
+    try:
+        conn = Connector.DBConnector()
+        query = sql.SQL("SELECT (COUNT(DISTINCT(RET.company))=1) AS res "
+                        "FROM ((SELECT company FROM Disks WHERE diskID={diskID}) UNION (SELECT company FROM RAMs R, RAMsDisks RD WHERE RD.diskID={diskID} AND R.ramID=RD.ramID)) as RET ").format(
+            diskID=sql.Literal(diskID))
+        rows_effected, result = conn.execute(query)
+        ret = result[0]['res']
+        conn.commit()
+    except Exception as e:
+        ret = False
+    finally:
+        conn.close()
+        return ret
 
 
 def getConflictingDisks() -> List[int]:
-    return []
+    conn = None
+    rows_effected, result = 0, ResultSet()
+    ret = []
+    try:
+        conn = Connector.DBConnector()
+        query = sql.SQL("SELECT ANS.diskID AS ret "
+                        "FROM (SELECT queryID FROM QueriesDisks GROUP BY queryID HAVING MIN(diskID)<> MAX(diskID)) AS QD "
+                        "JOIN QueriesDisks AS ANS ON ANS.queryID = QD.queryID "
+                        "ORDER BY ANS.diskID ASC")
+        rows_effected, result = conn.execute(query)
+
+        for row in result:
+            if not row:
+                break
+            ret.append(row['ret'])  # IT'S NOT A CALCULATION! JUST REARRANGING RETURN VALUE!
+        conn.commit()
+    except Exception as e:
+        ret = []
+    finally:
+        conn.close()
+        return ret
+
 
 ####
 
