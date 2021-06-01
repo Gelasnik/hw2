@@ -72,7 +72,8 @@ def createTables():
             "ON DELETE CASCADE, "
             "FOREIGN KEY (diskID) "
             "REFERENCES Disks(diskID) "
-            "ON DELETE CASCADE "
+            "ON DELETE CASCADE, "
+            "PRIMARY KEY (queryID, diskID)"
             "); "
 
             "CREATE TABLE RAMsDisks ("
@@ -83,7 +84,8 @@ def createTables():
             "ON DELETE CASCADE, "
             "FOREIGN KEY (diskID) "
             "REFERENCES Disks(diskID) "
-            "ON DELETE CASCADE "
+            "ON DELETE CASCADE, "
+            "PRIMARY KEY (ramID, diskID)"
             ");"
 
             "CREATE VIEW DisksRAMSum as "
@@ -399,50 +401,61 @@ def addQueryToDisk(query: Query, diskID: int) -> ReturnValue:
                         "WHERE diskID={diskID}").format(queryID=sql.Literal(query.getQueryID()),
                                                         diskID=sql.Literal(diskID),
                                                         size=sql.Literal(query.getSize()))
-        # TODO check if table checks free space existence
+
         conn.execute(query)
         conn.commit()
-    # TODO add NOT_EXISTS exception
     except DatabaseException.ConnectionInvalid as e:
         ret = ReturnValue.ERROR
     except DatabaseException.NOT_NULL_VIOLATION as e:
         ret = ReturnValue.BAD_PARAMS
+    except DatabaseException.FOREIGN_KEY_VIOLATION as e:
+        ret = ReturnValue.NOT_EXISTS
     except DatabaseException.CHECK_VIOLATION as e:
         ret = ReturnValue.BAD_PARAMS
+    except DatabaseException.database_ini_ERROR as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.UNKNOWN_ERROR as e:
+        ret = ReturnValue.ERROR
     except DatabaseException.UNIQUE_VIOLATION as e:
         ret = ReturnValue.ALREADY_EXISTS
-    except Exception as e:
-        ret = ReturnValue.ERROR
     finally:
         conn.close()
         return ret
 
 
 def removeQueryFromDisk(query: Query, diskID: int) -> ReturnValue:
+    # TODO function gets no query id but whole query! Do i need to check all parameters?
     conn = None
     ret = ReturnValue.OK
     try:
         conn = Connector.DBConnector()
-        query = sql.SQL("DELETE FROM QueriesDisks "
-                        "WHERE diskID={diskID} AND queryID={queryID}; "
-                        "UPDATE Disks "
+        query = sql.SQL("UPDATE Disks "
                         "SET free_space=free_space+{size} "
-                        "WHERE diskID={diskID}").format(queryID=sql.Literal(query.getQueryID()),
-                                                        diskID=sql.Literal(diskID))
-        # TODO check if table checks free space existence
-        conn.execute(query)
-        conn.commit()
-    # TODO add NOT_EXISTS exception
+                        "WHERE diskID={diskID};"
+                        "DELETE FROM QueriesDisks "
+                        "WHERE diskID={diskID} AND queryID={queryID} "
+                        ).format(queryID=sql.Literal(query.getQueryID()),
+                                 diskID=sql.Literal(diskID),
+                                 size=sql.Literal(query.getSize()))
+
+        rows_effected, _ = conn.execute(query)
+        if rows_effected == 1:
+            conn.commit()
+
     except DatabaseException.ConnectionInvalid as e:
         ret = ReturnValue.ERROR
     except DatabaseException.NOT_NULL_VIOLATION as e:
-        ret = ReturnValue.BAD_PARAMS
+        ret = ReturnValue.OK
+    except DatabaseException.FOREIGN_KEY_VIOLATION as e:
+        ret = ReturnValue.OK
     except DatabaseException.CHECK_VIOLATION as e:
-        ret = ReturnValue.BAD_PARAMS
-    except DatabaseException.UNIQUE_VIOLATION as e:
-        ret = ReturnValue.ALREADY_EXISTS
-    except Exception as e:
+        ret = ReturnValue.OK
+    except DatabaseException.database_ini_ERROR as e:
         ret = ReturnValue.ERROR
+    except DatabaseException.UNKNOWN_ERROR as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.UNIQUE_VIOLATION as e:
+        ret = ReturnValue.OK
     finally:
         conn.close()
         return ret
@@ -460,13 +473,20 @@ def addRAMToDisk(ramID: int, diskID: int) -> ReturnValue:
 
         conn.execute(query)
         conn.commit()
-    # TODO add NOT_EXISTS exception
     except DatabaseException.ConnectionInvalid as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.NOT_NULL_VIOLATION as e:
+        ret = ReturnValue.BAD_PARAMS
+    except DatabaseException.FOREIGN_KEY_VIOLATION as e:
+        ret = ReturnValue.NOT_EXISTS
+    except DatabaseException.CHECK_VIOLATION as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.database_ini_ERROR as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.UNKNOWN_ERROR as e:
         ret = ReturnValue.ERROR
     except DatabaseException.UNIQUE_VIOLATION as e:
         ret = ReturnValue.ALREADY_EXISTS
-    except Exception as e:
-        ret = ReturnValue.ERROR
     finally:
         conn.close()
         return ret
@@ -481,12 +501,24 @@ def removeRAMFromDisk(ramID: int, diskID: int) -> ReturnValue:
                         "WHERE diskID={diskID} AND ramID={ramID}; "
                         ).format(ramID=sql.Literal(ramID),
                                  diskID=sql.Literal(diskID))
-        conn.execute(query)
-        conn.commit()
-    # TODO add NOT_EXISTS exception
+        rows_effected, _ = conn.execute(query)
+        if rows_effected == 0:
+            ret = ReturnValue.NOT_EXISTS
+        else:
+            conn.commit()
     except DatabaseException.ConnectionInvalid as e:
         ret = ReturnValue.ERROR
-    except Exception as e:
+    except DatabaseException.NOT_NULL_VIOLATION as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.FOREIGN_KEY_VIOLATION as e:
+        ret = ReturnValue.NOT_EXISTS
+    except DatabaseException.CHECK_VIOLATION as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.database_ini_ERROR as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.UNKNOWN_ERROR as e:
+        ret = ReturnValue.ERROR
+    except DatabaseException.UNIQUE_VIOLATION as e:
         ret = ReturnValue.ERROR
     finally:
         conn.close()
@@ -499,19 +531,30 @@ def averageSizeQueriesOnDisk(diskID: int) -> float:
     ret = -1
     try:
         conn = Connector.DBConnector()
-        query = sql.SQL("SELECT AVG(Q.size) "
+        query = sql.SQL("SELECT COALESCE(AVG(Q.size), 0) AS avg "
                         "FROM Queries Q, (SELECT queryID "
-                        "FROM QueriesDisks "
-                        "WHERE diskID={diskID}) AS QD "
+                                          "FROM QueriesDisks "
+                                          "WHERE diskID={diskID}) AS QD "
                         "WHERE Q.queryID = QD.queryID").format(diskID=sql.Literal(diskID))
         rows_effected, result = conn.execute(query)
         ret = result[0]['avg']
         conn.commit()
         # TODO add exception: 0 in case of division by 0 or ID does not exist, -1 in case of other error.
+
+    except DatabaseException.ConnectionInvalid as e:
+        ret = -1
+    except DatabaseException.NOT_NULL_VIOLATION as e:
+        ret = -1
+    except DatabaseException.FOREIGN_KEY_VIOLATION as e:
+        ret = -1
+    except DatabaseException.CHECK_VIOLATION as e:
+        ret = -1
+    except DatabaseException.database_ini_ERROR as e:
+        ret = -1
+    except DatabaseException.UNKNOWN_ERROR as e:
+        ret = -1
     except DatabaseException.UNIQUE_VIOLATION as e:
         ret = 0
-    except Exception as e:
-        ret = -1
     finally:
         conn.close()
         return ret
@@ -580,12 +623,6 @@ def getQueriesCanBeAddedToDisk(diskID: int) -> List[int]:
         conn.close()
         return ret
 
-
-# ("SELECT Q.queryID "
-#                         "FROM  (SELECT diskID, free_space FROM Disks WHERE diskID={diskID}) AS D, Queries Q "
-#                         "WHERE Q.size<=D.free_space AND Q.queryID NOT IN (SELECT queryID FROM QueriesDisks WHERE diskID={diskID}) "
-#                         "ORDER BY queryID DESC "
-#                         "LIMIT 5")
 
 def getQueriesCanBeAddedToDiskAndRAM(diskID: int) -> List[int]:
     conn = None
